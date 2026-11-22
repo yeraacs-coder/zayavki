@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Заявка в цех</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:var(--tg-theme-bg-color,#fff); --bg2:var(--tg-theme-secondary-bg-color,#f2f4f3);
+    --text:var(--tg-theme-text-color,#1d2622); --hint:var(--tg-theme-hint-color,#7c8782);
+    --accent:var(--tg-theme-button-color,#2f5b4c); --accent-text:var(--tg-theme-button-text-color,#fff);
+    --line:rgba(127,127,127,.22);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg2);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;font-size:16px}
+  .top{position:sticky;top:0;z-index:5;background:var(--bg);padding:10px 12px 8px;border-bottom:1px solid var(--line)}
+  .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+  .point{font-weight:700;font-size:17px;flex:1}
+  select{font:inherit;padding:7px 8px;border-radius:9px;border:1px solid var(--line);background:var(--bg2);color:var(--text);max-width:100%}
+  .chips{display:flex;gap:6px;overflow-x:auto;margin-top:8px;padding-bottom:2px;-webkit-overflow-scrolling:touch}
+  .chip{flex:none;border:1px solid var(--line);background:var(--bg2);color:var(--text);border-radius:18px;padding:7px 13px;font:inherit;font-size:15px}
+  .chip.on{background:var(--accent);color:var(--accent-text);border-color:var(--accent)}
+  .tools{display:flex;gap:6px;margin-top:8px}
+  .tools input{flex:1;min-width:0;font:inherit;padding:8px 10px;border-radius:9px;border:1px solid var(--line);background:var(--bg2);color:var(--text)}
+  .tools button{font:inherit;font-size:14px;border-radius:9px;border:1px solid var(--accent);background:transparent;color:var(--accent);padding:7px 10px;white-space:nowrap}
+  .status{font-size:13px;color:var(--hint);margin-top:6px;min-height:16px}
+  .status b{color:var(--text)}
+  main{padding:6px 0 110px}
+  h3{margin:14px 14px 4px;font-size:13px;letter-spacing:.6px;color:var(--hint);font-weight:700}
+  .list{background:var(--bg)}
+  .item{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line)}
+  .item .n{flex:1;min-width:0;line-height:1.25}
+  .item .n small{display:block;color:var(--hint);font-size:12px}
+  .item.has .n{font-weight:600}
+  .q{display:flex;align-items:center;gap:4px}
+  .q button{width:38px;height:38px;border-radius:10px;border:none;background:var(--bg2);color:var(--text);font-size:22px;line-height:1}
+  .q input{width:54px;height:38px;text-align:center;font:inherit;font-size:17px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text)}
+  .item.has .q input{border-color:var(--accent);font-weight:700}
+  .empty{padding:30px 16px;text-align:center;color:var(--hint)}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:var(--bg);border-top:1px solid var(--line);padding:10px 12px calc(10px + env(safe-area-inset-bottom));display:flex;gap:8px;z-index:6}
+  .bar button{flex:1;font:inherit;font-weight:600;border-radius:12px;border:none;padding:13px;background:var(--accent);color:var(--accent-text)}
+  .bar button.sec{flex:none;background:var(--bg2);color:var(--text);font-weight:500}
+  .bar.tg #sendBtn{display:none}
+  .bar.tg.noadmin{display:none}
+  .toast{position:fixed;left:12px;right:12px;bottom:90px;background:#1d2622;color:#fff;padding:12px 14px;border-radius:12px;font-size:15px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:9}
+  .toast.show{opacity:.95}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="row"><span class="point" id="pointName">Загрузка…</span><select id="pointSel" hidden></select></div>
+  <div class="chips" id="dates"></div>
+  <div class="chips" id="depts"></div>
+  <div class="tools">
+    <input id="search" type="search" placeholder="Поиск товара">
+    <button id="normBtn" type="button">По норме</button>
+  </div>
+  <div class="status" id="status"></div>
+</div>
+<main id="main"><div class="empty">Загрузка…</div></main>
+<div class="bar" id="bar">
+  <button class="sec" id="saveNormBtn" type="button" hidden>Сохранить как норму</button>
+  <button id="sendBtn" type="button">Отправить</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+// Адрес функции бота: https://<проект>.supabase.co/functions/v1/zayavki-bot
+const API = "https://YOUR_PROJECT.supabase.co/functions/v1/zayavki-bot/api";
+
+const TG = window.Telegram && Telegram.WebApp;
+const $ = (id) => document.getElementById(id);
+const state = { me:null, point:null, date:null, dept:null, items:{}, saved:{}, norm:{}, q:"" };
+
+function toast(t){ const el=$("toast"); el.textContent=t; el.classList.add("show"); clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove("show"),2600); }
+function fmt(n){ return (Math.round(n*100)/100).toString().replace(".",","); }
+function human(iso){ const d=new Date(iso+"T00:00:00Z"); const wd=["вс","пн","вт","ср","чт","пт","сб"][d.getUTCDay()]; return iso.slice(8,10)+"."+iso.slice(5,7)+" "+wd; }
+function addDays(iso,n){ const d=new Date(iso+"T00:00:00Z"); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
+function dirty(){ const a=state.items,b=state.saved; const ks=new Set([...Object.keys(a),...Object.keys(b)]); for(const k of ks) if((a[k]||0)!==(b[k]||0)) return true; return false; }
+function count(){ return Object.values(state.items).filter(v=>v>0).length; }
+
+async function call(action, extra={}){
+  const r = await fetch(API,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({initData: TG ? TG.initData : "", action, ...extra})});
+  const j = await r.json().catch(()=>({error:"Нет связи с сервером"}));
+  if(!r.ok || j.error) throw new Error(j.error || "Ошибка");
+  return j;
+}
+
+function confirmAsk(text){
+  return new Promise(res=>{ if(TG && TG.showConfirm) TG.showConfirm(text, ok=>res(ok)); else res(window.confirm(text)); });
+}
+
+async function guard(){ if(!dirty()) return true; return confirmAsk("Есть неотправленные изменения. Перейти без отправки?"); }
+
+function renderTop(){
+  const me=state.me;
+  const pts=me.points||[];
+  if(me.user.role==="admin" && pts.length>1){
+    $("pointName").textContent="Точка:";
+    const sel=$("pointSel"); sel.hidden=false;
+    sel.innerHTML=pts.map(p=>`<option value="${p.id}">${p.name}${p.kind==="client"?" (магазин)":""}</option>`).join("");
+    sel.value=state.point;
+  } else {
+    $("pointName").textContent=(pts.find(p=>p.id===state.point)||{}).name||"—";
+  }
+  const days=[[me.today,"Сегодня"],[me.tomorrow,"Завтра"],[addDays(me.tomorrow,1),"Послезавтра"]];
+  $("dates").innerHTML=days.map(([d,l])=>`<button class="chip${d===state.date?" on":""}" data-date="${d}">${l} · ${human(d)}</button>`).join("");
+  $("depts").innerHTML=me.depts.map(d=>`<button class="chip${d===state.dept?" on":""}" data-dept="${d}">${d}</button>`).join("");
+  $("saveNormBtn").hidden = me.user.role!=="admin";
+  $("bar").classList.toggle("noadmin", me.user.role!=="admin");
+}
+
+function renderList(){
+  const q=state.q.toLowerCase().replace(/ё/g,"е");
+  const prods=state.me.products.filter(p=>p.dept===state.dept && (!q || p.name.toLowerCase().replace(/ё/g,"е").includes(q)));
+  if(!prods.length){ $("main").innerHTML=`<div class="empty">Ничего не найдено</div>`; return; }
+  let html="", sec=null;
+  for(const p of prods){
+    if(p.section!==sec){ if(sec!==null) html+="</div>"; html+=`<h3>${p.section||""}</h3><div class="list">`; sec=p.section; }
+    const v=state.items[p.id]||0;
+    const unit=p.unit&&p.unit!=="шт"?`<small>${p.unit}</small>`:"";
+    html+=`<div class="item${v>0?" has":""}" data-id="${p.id}"><div class="n">${p.name}${unit}</div>
+      <div class="q"><button type="button" data-d="-1">−</button><input inputmode="decimal" value="${v?fmt(v):""}" placeholder="0"><button type="button" data-d="1">+</button></div></div>`;
+  }
+  $("main").innerHTML=html+"</div>";
+}
+
+function renderStatus(){
+  const n=count(), saved=Object.keys(state.saved).length;
+  let t = saved ? `Отправлено ранее: <b>${saved} поз.</b>` : "Заявка ещё не отправлена";
+  if(dirty()) t += " · <b>есть изменения</b>";
+  $("status").innerHTML = t + ` · до ${state.me.cutoff}`;
+  const label = n ? `Отправить · ${n} поз.` : (saved ? "Удалить заявку" : "Отправить");
+  if(TG && TG.MainButton){ TG.MainButton.setText(label); TG.MainButton.show(); }
+  $("sendBtn").textContent=label;
+}
+
+async function load(){
+  $("main").innerHTML=`<div class="empty">Загрузка…</div>`;
+  try{
+    const r=await call("load",{point_id:state.point,date:state.date,dept:state.dept});
+    state.items={...r.items}; state.saved={...r.items}; state.norm=r.norm||{};
+    $("normBtn").disabled=!Object.keys(state.norm).length;
+    $("normBtn").style.opacity=Object.keys(state.norm).length?1:.4;
+  }catch(e){ toast(e.message); state.items={}; state.saved={}; state.norm={}; }
+  renderTop(); renderList(); renderStatus();
+}
+
+function setQty(id, v){
+  v=Math.max(0, Math.round((Number(v)||0)*100)/100);
+  if(v>0) state.items[id]=v; else delete state.items[id];
+  const row=document.querySelector(`.item[data-id="${id}"]`);
+  if(row){ row.classList.toggle("has", v>0); const inp=row.querySelector("input"); if(document.activeElement!==inp) inp.value=v?fmt(v):""; }
+  renderStatus();
+}
+
+async function submit(){
+  if(TG && TG.MainButton) TG.MainButton.showProgress();
+  try{
+    const r=await call("save",{point_id:state.point,date:state.date,dept:state.dept,items:state.items});
+    state.saved={...state.items};
+    toast(r.count?`✅ Заявка отправлена: ${r.count} поз.`:"Заявка удалена");
+    if(TG && TG.HapticFeedback) TG.HapticFeedback.notificationOccurred("success");
+  }catch(e){ toast("❌ "+e.message); }
+  if(TG && TG.MainButton) TG.MainButton.hideProgress();
+  renderStatus();
+}
+
+document.addEventListener("click", async (e)=>{
+  const b=e.target.closest("button"); if(!b) return;
+  if(b.dataset.d){ const id=b.closest(".item").dataset.id; const p=state.me.products.find(x=>x.id==id); const step=p&&p.unit==="кг"?0.5:1; setQty(id,(state.items[id]||0)+Number(b.dataset.d)*step); if(TG&&TG.HapticFeedback) TG.HapticFeedback.selectionChanged(); return; }
+  if(b.dataset.date && b.dataset.date!==state.date){ if(!(await guard())) return; state.date=b.dataset.date; load(); return; }
+  if(b.dataset.dept && b.dataset.dept!==state.dept){ if(!(await guard())) return; state.dept=b.dataset.dept; $("search").value=""; state.q=""; load(); return; }
+  if(b.id==="normBtn"){
+    if(!Object.keys(state.norm).length){ toast("Для этой точки норма ещё не задана"); return; }
+    if(count() && !(await confirmAsk("Заменить текущие количества нормой?"))) return;
+    state.items={...state.norm}; renderList(); renderStatus(); return;
+  }
+  if(b.id==="sendBtn"){ submit(); return; }
+  if(b.id==="saveNormBtn"){
+    if(!(await confirmAsk("Сохранить эти количества как норму точки для отдела «"+state.dept+"»?"))) return;
+    try{ const r=await call("saveNorm",{point_id:state.point,dept:state.dept,items:state.items}); state.norm={...state.items}; toast(`Норма сохранена: ${r.count} поз.`); }catch(err){ toast("❌ "+err.message); }
+  }
+});
+document.addEventListener("input",(e)=>{
+  if(e.target.id==="search"){ state.q=e.target.value; renderList(); return; }
+  const row=e.target.closest(".item"); if(row){ setQty(row.dataset.id, String(e.target.value).replace(",",".")); }
+});
+$("pointSel").addEventListener("change", async (e)=>{ if(!(await guard())){ e.target.value=state.point; return; } state.point=Number(e.target.value); load(); });
+
+(async function init(){
+  if(TG){ TG.ready(); TG.expand(); $("bar").classList.add("tg"); TG.MainButton.onClick(submit); }
+  try{
+    state.me=await call("me");
+  }catch(e){ $("main").innerHTML=`<div class="empty">${e.message}</div>`; $("pointName").textContent="Нет доступа"; return; }
+  state.point=state.me.user.point_id || (state.me.points[0]||{}).id;
+  state.date=state.me.tomorrow; state.dept=state.me.depts[0];
+  load();
+})();
+</script>
+</body>
+</html>
